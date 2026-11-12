@@ -1,0 +1,2 @@
+Netting_Set,Credit_Spread_bps,Credit_Spread_P25_bps,Credit_Spread_P75_bps,LGD,Risk_Free_Rate,Hazard_Rate,Horizon_Years,Survival_Prob_At_Horizon,EPE_Uncollateralized,EPE_Collateralized,CVA_Collateralized,CVA_Uncollateralized,CVA_Low_Spread,CVA_High_Spread
+CSA-005,264.85,82.1,353.725,0.6,0.04,0.04414166666666667,8.345205479452055,0.6918602611303218,9769587.416675197,794518.1307880507,142758.5745996662,1769585.0393637572,47551.219619225376,184333.38303864133

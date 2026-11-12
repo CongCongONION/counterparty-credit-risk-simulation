@@ -1,0 +1,7 @@
+Underlying_Risk_Factor,Asset_Class,Spot,Vol,N_Trades
+GOLD,Commodity,2350.0,0.419,1
+WTI_CRUDE,Commodity,78.0,0.121,2
+ITRAXX.EU,Credit,55.0,0.219,2
+SPX,Equity,5300.0,0.176,1
+GBPUSD,FX,1.27,0.207,1
+EUR_6M_EURIBOR,Rates,3.8,0.161,1

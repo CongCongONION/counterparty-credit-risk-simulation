@@ -1,0 +1,9 @@
+Trade_ID,Asset_Class,Method,MTM_RC,Simulated_t0,Match
+23,Commodity,Forward-style linear,3941688.37,3941688.3700000043,True
+29,Equity,Forward-style linear,1901018.68,1901018.6800000526,True
+40,Commodity,Forward-style linear,113419.24,113419.23999999951,True
+65,Rates,Black-76-style option,-64229.12,-64229.11999999997,True
+77,Commodity,Forward-style linear,399596.02,399596.0199999941,True
+89,Credit,Annuity-based CDS,7715672.87,7715672.869999999,True
+106,Credit,Annuity-based CDS,67399.98,67399.9799999998,True
+111,FX,Forward-style linear,117716.2,117716.19999999761,True
