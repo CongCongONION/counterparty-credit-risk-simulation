@@ -142,6 +142,174 @@ def check_bundle(bundle):
     return results
 
 
+def check_v2(bundle, v2):
+    """Version 2 checks: full-book regression, aggregation and SA-CCR v2."""
+    results = []
+    fullbook = v2["fullbook"]
+    summary = fullbook["summary"]
+    counterparty = fullbook["counterparty"]
+
+    # --- Full-book Monte Carlo -----------------------------------------
+    csa = summary[summary["Netting_Agreement_ID"] == "CSA-005"].iloc[0]
+    results.append(_close("v2 full-book CSA-005 uncollateralised EPE", float(csa["EPE_Uncollateralized"]), BASELINE["epe_uncollat"], rel_tol=MC_REL_TOL))
+    results.append(_close("v2 full-book CSA-005 collateralised EPE", float(csa["EPE_Collateralized"]), BASELINE["epe_collat"], rel_tol=MC_REL_TOL))
+    results.append(_close("v2 full-book CSA-005 uncollateralised CVA", float(csa["CVA_Uncollateralized"]), BASELINE["cva_uncollat"], rel_tol=MC_REL_TOL))
+    results.append(_close("v2 full-book CSA-005 collateralised CVA", float(csa["CVA_Collateralized"]), BASELINE["cva_collat"], rel_tol=MC_REL_TOL))
+
+    t0_ok = all(
+        bool(detail["t0_check"]["Match"].all())
+        for detail in fullbook["details"].values()
+    )
+    results.append((
+        "v2 t=0 revaluation reproduces every MTM in all sets",
+        t0_ok,
+        f"{len(fullbook['details'])} netting sets checked",
+    ))
+    ordering_ok = bool(
+        (summary["EPE_Collateralized"] <= summary["EPE_Uncollateralized"] + 1e-6).all()
+        and (summary["EPE_Collateralized"] >= 0).all()
+    )
+    results.append((
+        "v2 collateralised EPE within [0, uncollateralised] for every set",
+        ordering_ok,
+        f"max excess ${float((summary['EPE_Collateralized'] - summary['EPE_Uncollateralized']).max()):,.4f}",
+    ))
+
+    total_gap = max(
+        abs(float(summary[column].sum()) - float(counterparty[column].sum()))
+        for column in (
+            "EPE_Uncollateralized",
+            "EPE_Collateralized",
+            "CVA_Uncollateralized",
+            "CVA_Collateralized",
+        )
+    )
+    results.append((
+        "v2 portfolio totals equal counterparty sums",
+        total_gap <= 0.01,
+        f"max gap ${total_gap:,.4f} across EPE/CVA totals",
+    ))
+    regrouped = summary.groupby("Counterparty")["CVA_Collateralized"].sum()
+    cp_gap = max(
+        abs(float(regrouped.get(row.Counterparty, 0.0)) - float(row.CVA_Collateralized))
+        for row in counterparty.itertuples()
+    )
+    results.append((
+        "v2 counterparty CVA equals sum of its netting sets",
+        cp_gap <= 0.01,
+        f"max gap ${cp_gap:,.4f}",
+    ))
+
+    # --- SA-CCR v2 -------------------------------------------------------
+    saccr = v2["saccr_v2"]["comparison"]
+    identity_gap = 0.0
+    for row in saccr.itertuples():
+        identity_gap = max(
+            identity_gap,
+            abs(row.EAD_v1 - 1.4 * (row.RC + row.PFE_v1)),
+            abs(row.EAD_v2 - 1.4 * (row.RC + row.PFE_v2)),
+            abs(
+                row.EAD_v2_Collateralized_RC
+                - 1.4 * (row.RC_Collateralized + row.PFE_v2_Collateralized_RC)
+            ),
+        )
+    results.append((
+        "v2 SA-CCR EAD identity holds under all three variants",
+        identity_gap <= 0.01,
+        f"max gap ${identity_gap:,.6f}",
+    ))
+    buckets = v2["saccr_v2"]["rates_buckets"]
+    bucket_ok = bool(
+        (buckets["IR_AddOn_v2_Bucketed"] >= -1e-9).all()
+        and (
+            buckets["IR_AddOn_v2_Bucketed"]
+            <= buckets["IR_Bucket_Gross_AddOn"] + 1e-6
+        ).all()
+    )
+    results.append((
+        "v2 bucketed IR add-on bounded by gross bucket add-on",
+        bucket_ok,
+        f"{len(buckets)} currency hedging sets checked",
+    ))
+    positive_vm = saccr[saccr["VM_At_Valuation"] > 0]
+    collat_ok = bool(
+        (
+            positive_vm["EAD_v2_Collateralized_RC"]
+            <= positive_vm["EAD_v2"] + 0.01
+        ).all()
+    )
+    results.append((
+        "v2 collateralised-RC EAD does not exceed v2 EAD for positive-VM sets",
+        collat_ok,
+        f"{len(positive_vm)} positive-VM sets checked",
+    ))
+    multiplier_ok = bool(
+        saccr[
+            [
+                "Multiplier_v1",
+                "Multiplier_v2",
+                "Multiplier_v2_Collateralized_RC",
+            ]
+        ]
+        .apply(lambda column: column.between(0.05, 1.0).all())
+        .all()
+    )
+    results.append(("v2 PFE multipliers lie in [0.05, 1]", multiplier_ok, "all variants"))
+
+    # --- CSA-005 analytics ------------------------------------------------
+    analytics = v2["analytics"]
+    stress = analytics["stress"].set_index("Scenario")
+    vol_ok = bool(
+        stress.loc["Volatility x1.5", "EPE_Uncollateralized"]
+        >= stress.loc["Base", "EPE_Uncollateralized"]
+        and stress.loc["Volatility x1.5", "EPE_Collateralized"]
+        >= stress.loc["Base", "EPE_Collateralized"]
+    )
+    results.append((
+        "v2 volatility stress raises CSA-005 EPE",
+        vol_ok,
+        "uncollateralised and collateralised EPE compared with base",
+    ))
+
+    convergence = analytics["convergence"]
+    conv_ok = bool(
+        convergence["N_Paths"].tolist() == [1000, 2500, 5000, 10000]
+        and np.isfinite(
+            convergence[
+                ["EPE_Uncollateralized", "EPE_Collateralized", "CVA_Collateralized"]
+            ].to_numpy(dtype=float)
+        ).all()
+    )
+    at = convergence.set_index("N_Paths")
+    spacing_detail = (
+        "informational only (not forced): "
+        f"uncollat EPE |5k-10k|=${abs(at.loc[5000, 'EPE_Uncollateralized'] - at.loc[10000, 'EPE_Uncollateralized']):,.0f} vs "
+        f"|1k-10k|=${abs(at.loc[1000, 'EPE_Uncollateralized'] - at.loc[10000, 'EPE_Uncollateralized']):,.0f}; "
+        f"collat CVA |5k-10k|=${abs(at.loc[5000, 'CVA_Collateralized'] - at.loc[10000, 'CVA_Collateralized']):,.0f} vs "
+        f"|1k-10k|=${abs(at.loc[1000, 'CVA_Collateralized'] - at.loc[10000, 'CVA_Collateralized']):,.0f}"
+    )
+    results.append(("v2 convergence table populated and finite", conv_ok, spacing_detail))
+
+    sensitivity = analytics["sensitivity"]
+    mono_cva = bool(
+        sensitivity.groupby("MPOR_Business_Days")["CVA_Collateralized"]
+        .apply(lambda values: values.is_monotonic_increasing)
+        .all()
+    )
+    epe_by_mpor = sensitivity.groupby("MPOR_Business_Days")["EPE_Collateralized"].nunique()
+    sens_ok = bool(
+        len(sensitivity) == 12
+        and mono_cva
+        and (epe_by_mpor == 1).all()
+    )
+    results.append((
+        "v2 sensitivity grid is 3 MPOR x 4 spreads with CVA increasing in spread",
+        sens_ok,
+        "EPE is spread-invariant within each MPOR row group by construction",
+    ))
+    return results
+
+
 def report(results):
     lines = []
     for name, ok, detail in results:

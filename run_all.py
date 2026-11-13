@@ -24,6 +24,7 @@ sys.path.insert(0, str(ROOT))
 from src import reconciliation  # noqa: E402
 from src.config import PROTOTYPE_NETTING_SET  # noqa: E402
 from src.pipeline import headline_metrics, run_pipeline  # noqa: E402
+from src.v2 import run_v2  # noqa: E402
 
 DATA_PATH = ROOT / "data" / "CCR_Book_Simulation_v3.xlsx"
 if not DATA_PATH.exists():  # fall back to the identical CSV export
@@ -96,6 +97,72 @@ def write_outputs(bundle, metrics):
     wwr_summary.to_csv(OUT / "wwr_summary.csv", index=False)
     bundle["wwr_terciles"].reset_index().to_csv(OUT / "wwr_terciles.csv", index=False)
     return cva_summary, wwr_summary
+
+
+def write_v2_outputs(v2):
+    fullbook = v2["fullbook"]
+    fullbook["summary"].to_csv(OUT / "fullbook_exposure_summary.csv", index=False)
+    fullbook["counterparty"].to_csv(OUT / "fullbook_counterparty_cva.csv", index=False)
+
+    saccr = v2["saccr_v2"]
+    saccr["comparison"].to_csv(OUT / "saccr_v2_comparison.csv", index=False)
+    saccr["rates_buckets"].to_csv(OUT / "saccr_v2_rates_buckets.csv", index=False)
+
+    analytics = v2["analytics"]
+    analytics["convergence"].to_csv(OUT / "convergence.csv", index=False)
+    analytics["stress"].to_csv(OUT / "stress_results.csv", index=False)
+    analytics["sensitivity"].to_csv(OUT / "sensitivity_grid.csv", index=False)
+
+    profiles = analytics["stress_profiles"]
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for label, profile in profiles.items():
+        ax.plot(
+            profile["t_years"],
+            profile["EE"] / 1e6,
+            label=f"EE - {label}",
+        )
+        ax.plot(
+            profile["t_years"],
+            profile["PFE_95"] / 1e6,
+            "--",
+            alpha=0.65,
+            label=f"PFE 95% - {label}",
+        )
+    ax.set_xlabel("Years from valuation date")
+    ax.set_ylabel("Uncollateralised exposure ($m)")
+    ax.set_title("CSA-005 stress exposure profiles")
+    ax.legend(ncol=2, fontsize=8)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(OUT / "stress_exposure_profile.png", dpi=150)
+    plt.close(fig)
+
+
+def print_v2_headlines(v2):
+    summary = v2["fullbook"]["summary"]
+    counterparty = v2["fullbook"]["counterparty"]
+    saccr = v2["saccr_v2"]["comparison"]
+    print("=== Version 2 headline results ===")
+    print(
+        "  Full-book MC totals: "
+        f"EPE ${summary['EPE_Uncollateralized'].sum():,.0f} uncollateralised / "
+        f"${summary['EPE_Collateralized'].sum():,.0f} collateralised; "
+        f"CVA ${summary['CVA_Uncollateralized'].sum():,.0f} / "
+        f"${summary['CVA_Collateralized'].sum():,.0f}"
+    )
+    print("  Counterparty collateralised CVA ranking:")
+    for row in counterparty.itertuples():
+        print(
+            f"    {row.Counterparty:<8} ${row.CVA_Collateralized:>12,.0f} "
+            f"({row.CVA_Collateralized_Share_Pct:.1f}%)"
+        )
+    print(
+        "  SA-CCR totals: "
+        f"EAD v1 ${saccr['EAD_v1'].sum():,.0f}; "
+        f"EAD v2 ${saccr['EAD_v2'].sum():,.0f}; "
+        f"EAD v2 + collateralised RC ${saccr['EAD_v2_Collateralized_RC'].sum():,.0f}"
+    )
+    print()
 
 
 def write_charts(bundle, metrics):
@@ -209,9 +276,18 @@ def main():
     print()
     results = reconciliation.check_bundle(bundle)
     text, ok = reconciliation.report(results)
-    print("=== Reconciliation ===")
+    print("=== Reconciliation (v1) ===")
     print(text)
-    return 0 if ok else 1
+    print()
+
+    v2 = run_v2(bundle)
+    write_v2_outputs(v2)
+    print_v2_headlines(v2)
+    v2_results = reconciliation.check_v2(bundle, v2)
+    v2_text, v2_ok = reconciliation.report(v2_results)
+    print("=== Reconciliation (v2) ===")
+    print(v2_text)
+    return 0 if (ok and v2_ok) else 1
 
 
 if __name__ == "__main__":

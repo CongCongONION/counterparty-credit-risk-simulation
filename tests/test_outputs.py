@@ -91,6 +91,86 @@ def test_wwr_addon_is_positive_and_small():
     assert abs(wwr["WWR_Addon"]) < abs(wwr["WWR_Addon_Uncollateralized"])
 
 
+def test_fullbook_csa005_regression():
+    fullbook = _read("fullbook_exposure_summary.csv")
+    assert len(fullbook) == 8
+    csa005 = fullbook[fullbook["Netting_Agreement_ID"] == "CSA-005"]
+    assert len(csa005) == 1
+    row = csa005.iloc[0]
+    assert row["EPE_Uncollateralized"] == pytest.approx(9_769_587, rel=0.005)
+    assert row["EPE_Collateralized"] == pytest.approx(794_518, rel=0.005)
+    assert row["CVA_Uncollateralized"] == pytest.approx(1_769_585, rel=0.005)
+    assert row["CVA_Collateralized"] == pytest.approx(142_759, rel=0.005)
+
+
+def test_fullbook_collateralised_never_exceeds_uncollateralised():
+    fullbook = _read("fullbook_exposure_summary.csv")
+    assert (fullbook["EPE_Collateralized"] >= 0).all()
+    assert (
+        fullbook["EPE_Collateralized"]
+        <= fullbook["EPE_Uncollateralized"] + 1e-6
+    ).all()
+    assert (
+        fullbook["Peak_PFE95_Collateralized"]
+        <= fullbook["Peak_PFE95_Uncollateralized"] + 1e-6
+    ).all()
+    assert (
+        fullbook["CVA_Collateralized"]
+        <= fullbook["CVA_Uncollateralized"] + 1e-6
+    ).all()
+
+
+def test_saccr_v2_ead_identities():
+    saccr = _read("saccr_v2_comparison.csv")
+    assert len(saccr) == 8
+    np.testing.assert_allclose(
+        saccr["EAD_v1"], 1.4 * (saccr["RC"] + saccr["PFE_v1"]), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        saccr["EAD_v2"], 1.4 * (saccr["RC"] + saccr["PFE_v2"]), rtol=1e-9
+    )
+    np.testing.assert_allclose(
+        saccr["EAD_v2_Collateralized_RC"],
+        1.4
+        * (
+            saccr["RC_Collateralized"]
+            + saccr["PFE_v2_Collateralized_RC"]
+        ),
+        rtol=1e-9,
+    )
+    positive_vm = saccr[saccr["VM_At_Valuation"] > 0]
+    assert (
+        positive_vm["EAD_v2_Collateralized_RC"] <= positive_vm["EAD_v2"] + 0.01
+    ).all()
+
+
+def test_sensitivity_grid_shape_and_spread_monotonicity():
+    grid = _read("sensitivity_grid.csv")
+    assert grid.shape == (12, 6)
+    assert sorted(grid["MPOR_Business_Days"].unique()) == [5, 10, 20]
+    assert sorted(grid["Spread_Shift_bps"].unique()) == [-100.0, 0.0, 100.0, 300.0]
+    for _mpor, group in grid.groupby("MPOR_Business_Days"):
+        ordered = group.sort_values("Credit_Spread_bps")
+        assert ordered["CVA_Collateralized"].is_monotonic_increasing
+        # Spread changes price default risk only; it does not change EPE.
+        assert ordered["EPE_Collateralized"].nunique() == 1
+
+
+def test_convergence_and_stress_outputs_are_coherent():
+    convergence = _read("convergence.csv")
+    assert convergence["N_Paths"].tolist() == [1000, 2500, 5000, 10000]
+    assert np.isfinite(convergence.select_dtypes(include=[np.number])).all().all()
+    stress = _read("stress_results.csv").set_index("Scenario")
+    assert (
+        stress.loc["Volatility x1.5", "EPE_Uncollateralized"]
+        > stress.loc["Base", "EPE_Uncollateralized"]
+    )
+    assert (
+        stress.loc["Volatility x1.5", "CVA_Collateralized"]
+        > stress.loc["Base", "CVA_Collateralized"]
+    )
+
+
 def test_tercile_epe_rises_with_spread():
     terciles = _read("wwr_terciles.csv").set_index("Tercile")
     assert (

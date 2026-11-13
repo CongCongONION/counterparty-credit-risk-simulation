@@ -61,8 +61,34 @@ def years_from(grid, valuation_date):
     return np.array([(d - valuation_date).days / 365.0 for d in grid])
 
 
-def build_correlation(factors):
-    """Stylised target correlation: small generic co-movement, two overrides."""
+def _repair_to_psd_correlation(corr, eigenvalue_floor=1e-8):
+    """Repair a symmetric matrix by eigenvalue clipping and rescaling.
+
+    Each repair pass clips eigenvalues at a small positive floor, rebuilds
+    the matrix, then rescales it to unit diagonal.  A few passes are used
+    because rescaling can itself move the smallest eigenvalue slightly.
+    """
+    repaired = 0.5 * (corr + corr.T)
+    for _ in range(100):
+        values, vectors = np.linalg.eigh(repaired)
+        values = np.maximum(values, eigenvalue_floor)
+        repaired = (vectors * values) @ vectors.T
+        repaired = 0.5 * (repaired + repaired.T)
+        scale = np.sqrt(np.diag(repaired))
+        repaired = repaired / np.outer(scale, scale)
+        np.fill_diagonal(repaired, 1.0)
+        if np.linalg.eigvalsh(repaired).min() >= eigenvalue_floor / 2:
+            return repaired
+    raise ValueError("Could not repair the shifted correlation matrix to PSD.")
+
+
+def build_correlation(factors, off_diagonal_shift=0.0):
+    """Stylised target correlation: small generic co-movement, two overrides.
+
+    ``off_diagonal_shift`` is used only by the v2 stress test.  It is added
+    to every cross-factor correlation before the matrix is checked (and,
+    if needed, repaired) for positive semidefiniteness.
+    """
     n = len(factors)
     corr = np.full((n, n), GENERIC_CROSS_CORR)
     np.fill_diagonal(corr, 1.0)
@@ -74,12 +100,22 @@ def build_correlation(factors):
 
     override("WTI_CRUDE", "GOLD", 0.30)     # two commodity underlyings move together
     override("SPX", "ITRAXX.EU", -0.50)     # equity down / credit wider: the WWR link
+    if off_diagonal_shift != 0.0:
+        corr = corr + off_diagonal_shift * (1.0 - np.eye(n))
+        np.fill_diagonal(corr, 1.0)
+        corr = _repair_to_psd_correlation(corr)
     if np.linalg.eigvalsh(corr).min() <= 0:
         raise ValueError("Target correlation matrix is not positive definite.")
     return corr
 
 
-def simulate_paths(risk_factors, t_years, n_paths=N_PATHS, seed=RANDOM_SEED):
+def simulate_paths(
+    risk_factors,
+    t_years,
+    n_paths=N_PATHS,
+    seed=RANDOM_SEED,
+    correlation_shift=0.0,
+):
     """Simulate level paths with shape (n_paths, n_dates, n_factors)."""
     factors = risk_factors.index.tolist()
     spots = risk_factors.loc[factors, "Spot"].to_numpy(dtype=float)
@@ -92,7 +128,7 @@ def simulate_paths(risk_factors, t_years, n_paths=N_PATHS, seed=RANDOM_SEED):
     if np.isnan(kappas).any():
         raise ValueError("An asset class has no mean-reversion speed assigned.")
 
-    corr = build_correlation(factors)
+    corr = build_correlation(factors, off_diagonal_shift=correlation_shift)
     chol = np.linalg.cholesky(corr)
 
     n_steps = len(t_years) - 1

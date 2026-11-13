@@ -52,6 +52,54 @@ Reading of the results: SA-CCR EAD for `CSA-005` ($82.1M) sits far above its sim
 
 `src/reconciliation.py` checks every headline figure against the template project's verified baseline run, plus structural identities (RC flooring, gross − benefit = RC per set, t = 0 revaluation of all 8 trades, collateralised exposure inside [0, uncollateralised], beta = 0 reproducing the flat CVA, monotone terciles). Current status: **ALL CHECKS PASS** — SA-CCR matches to the dollar, and all Monte Carlo quantities match the baseline to well under 0.01% (the baseline is published rounded to whole dollars; the residual differences are sub-dollar). The full side-by-side table is written to `outputs/comparison_vs_template.md` on every run.
 
+## Version 2 - deepening
+
+Version 2 keeps the v1 pipeline and its reconciliation baseline unchanged, then closes the three largest scope gaps. `run_all.py` now runs v1 and v2 end to end and prints both reconciliation verdicts: **29/29 v1 checks pass and 15/15 v2 checks pass; the expanded pytest suite passes 12/12.**
+
+### P1 - Full-book Monte Carlo
+
+The path simulation, revaluation, collateral and CVA stages now run for all eight netting sets, not only `CSA-005`. Each set uses its own underlyings, averaged trade volatilities, monthly horizon, modal CSA threshold/MTA from its collateralised live trades (smallest value breaks a tie), and median live-trade credit spread. `CSA-005` deliberately retains seed 42 and the v1 draw order; the other sets use seeds 43-49 in agreement order after the prototype is removed. This preserves the hard regression: the full-book `CSA-005` row remains EPE $9,769,587 / $794,518 and CVA $1,769,585 / $142,759 (uncollateralised / collateralised).
+
+| Portfolio Monte Carlo total | Uncollateralised | Collateralised |
+|---|---:|---:|
+| EPE, sum of eight sets | $220,471,795 | $12,428,975 |
+| CVA, sum of eight sets | $31,103,226 | $1,916,052 |
+
+Collateralised CVA ranking by counterparty: Bank1 $731,232 (38.2%), Bank3 $358,447 (18.7%), Fund1 $270,846 (14.1%), Bank2 $264,478 (13.8%), Fund2 $249,308 (13.0%), Fund3 $41,742 (2.2%). Set-level detail is in `outputs/fullbook_exposure_summary.csv`; counterparty aggregation is in `outputs/fullbook_counterparty_cva.csv`. Because each set is simulated independently, portfolio totals are sums of set-level marginal results, not a joint portfolio distribution.
+
+### P2 - SA-CCR v2
+
+Interest-rate trades are assigned to <1y, 1-5y and >5y maturity buckets (CRE52.53 bucket structure). Within each currency hedging set, bucket add-ons `D_b` are combined as `sqrt(sum_b D_b^2 + 2rho sum_{b<k} D_b D_k)` with a documented uniform pairwise `rho = 50%`, following the CRE52.54-52.55 effective-notional/add-on architecture as a simplified supervisory-correlation implementation. A collateralised replacement-cost variant then uses `RC_collat = max(V - VM, TH + MTA - NICA, 0)` with `NICA = 0` and VM equal to the collateral model's path-invariant day-one balance `max(RC - TH, 0)`.
+
+| SA-CCR total | EAD |
+|---|---:|
+| v1 | $478,547,962 |
+| v2, maturity-bucketed IR add-ons | $479,462,602 (+$914,640, +0.19%) |
+| v2 plus collateralised RC | $367,877,503 (-$111,585,099 vs v2) |
+
+Bucketing can raise an IR add-on relative to v1 when positions in different tenor buckets offset under v1's single signed sum: the quadratic form only partially credits that offset. It can lower the add-on when bucket amounts have the same sign because the 50% cross-bucket correlation is below perfect correlation. The collateralised-RC EAD falls for every positive-VM set. For the three negative-MTM / zero-VM sets it rises by the contractual `TH + MTA` floor in the RC formula; that is a formula effect, not a collateral benefit. Full detail is in `outputs/saccr_v2_comparison.csv`, with bucket inputs in `outputs/saccr_v2_rates_buckets.csv`.
+
+### P3 - CSA-005 convergence, stress and sensitivity
+
+| Paths | Uncollateralised EPE | Collateralised EPE | Collateralised CVA |
+|---:|---:|---:|---:|
+| 1,000 | $9,920,343 (+1.93% vs 10k) | $797,982 (+0.22%) | $143,038 (+0.03%) |
+| 2,500 | $9,847,032 (+1.18%) | $796,220 (+0.00%) | $143,143 (+0.10%) |
+| 5,000 | $9,769,587 (+0.38%) | $794,518 (-0.21%) | $142,759 (-0.16%) |
+| 10,000 | $9,732,643 | $796,216 | $142,993 |
+
+All four path counts place the headline quantities within about 2% of the 10,000-path run, and the collateralised quantities within about 0.25%. The spacing is not forced to be monotone: the samples are independently drawn at each size, so the 1,000-path collateralised CVA happens to land closer to 10,000 than the 5,000-path value.
+
+| CSA-005 stress | Uncoll. EPE | Collat. EPE | Peak PFE95, uncoll. | Collat. CVA |
+|---|---:|---:|---:|---:|
+| Base | $9,769,587 | $794,518 | $63,677,741 | $142,759 |
+| Volatilities x1.5 | $12,285,563 (+25.8%) | $987,025 (+24.2%) | $86,141,484 (+35.3%) | $179,098 (+25.5%) |
+| Correlations +0.20, PSD repaired | $10,251,527 (+4.9%) | $814,415 (+2.5%) | $67,898,026 (+6.6%) | $146,644 (+2.7%) |
+
+In the MPOR / spread grid (`outputs/sensitivity_grid.csv`), collateralised EPE at the base spread rises from $531,943 at a 5-day MPOR to $794,518 at 10 days and $1,312,529 at 20 days. At the base 10-day MPOR, collateralised CVA is $92,383 at -100 bp, $142,759 at the 264.85 bp anchor, $189,339 at +100 bp and $272,475 at +300 bp. The stress EE/PFE chart is `outputs/stress_exposure_profile.png`.
+
+A model-validation memorandum covering v1 and v2, the complete 44-check inventory, findings and remaining limitations is in `reports/model_validation_memo.md`.
+
 ## Repository structure
 
 ```text
@@ -69,11 +117,17 @@ Reading of the results: SA-CCR EAD for `CSA-005` ($82.1M) sits far above its sim
 │   ├── collateral.py          # Part 4 variation margin
 │   ├── cva.py                 # Part 5 CVA
 │   ├── wwr.py                 # Part 6 wrong-way risk
-│   ├── pipeline.py            # orchestration of all stages
-│   └── reconciliation.py      # checks against the template baseline
+│   ├── fullbook.py            # v2 P1: Monte Carlo for all netting sets
+│   ├── saccr_v2.py            # v2 P2: IR buckets + collateralised RC
+│   ├── analytics.py           # v2 P3: convergence, stress, sensitivity
+│   ├── v2.py                  # v2 orchestration
+│   ├── pipeline.py            # v1 orchestration of all stages
+│   └── reconciliation.py      # v1 + v2 checks against the baselines
 ├── tests/
 │   └── test_outputs.py        # pytest suite re-deriving results from outputs/
-├── outputs/                   # generated CSVs, charts, comparison table
+├── reports/
+│   └── model_validation_memo.md
+├── outputs/                   # generated v1 + v2 CSVs, charts, comparison table
 └── requirements.txt
 ```
 
